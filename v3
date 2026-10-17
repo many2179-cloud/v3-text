@@ -1,0 +1,299 @@
+-- Text Teleporter GUI
+-- Lists every piece of in-world text (TextLabels / TextButtons / TextBoxes inside
+-- BillboardGuis and SurfaceGuis in workspace), sorted by distance, and lets you
+-- teleport to any one of them. Also has Nearest / Farthest shortcuts.
+-- Run directly in your executor, or host it and use:
+-- loadstring(game:HttpGet("YOUR_RAW_URL_HERE"))()
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local player = Players.LocalPlayer
+
+local MIN_DISTANCE = 3      -- "Nearest" ignores text closer than this
+local HEIGHT_OFFSET = 3     -- studs above the text's part to land
+local MAX_ENTRIES = 200     -- cap on list size so big games don't lag
+
+local function getGuiParent()
+	local ok, result = pcall(function()
+		return (gethui and gethui()) or game:GetService("CoreGui")
+	end)
+	if ok and result then return result end
+	return player:WaitForChild("PlayerGui")
+end
+
+local parentGui = getGuiParent()
+local old = parentGui:FindFirstChild("TextTeleporter")
+if old then old:Destroy() end
+
+-- Helpers
+local function getRoot()
+	local char = player.Character
+	return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function instancePosition(inst)
+	if not inst then return nil end
+	if inst:IsA("BasePart") then
+		return inst.Position
+	elseif inst:IsA("Attachment") then
+		return inst.WorldPosition
+	elseif inst:IsA("Model") then
+		return inst:GetPivot().Position
+	end
+	return nil
+end
+
+-- Finds the world position of the BillboardGui / SurfaceGui a text object lives in
+local function getTextPosition(textObj)
+	local gui = textObj:FindFirstAncestorWhichIsA("BillboardGui") or textObj:FindFirstAncestorWhichIsA("SurfaceGui")
+	if not gui or not gui.Enabled then return nil end
+	return instancePosition(gui.Adornee) or instancePosition(gui.Parent)
+end
+
+local function cleanText(text)
+	text = text:gsub("<[^>]+>", "")   -- strip rich text tags
+	text = text:gsub("%s+", " ")      -- collapse newlines/whitespace
+	return (text:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+-- Returns list of {obj, pos, dist, label}, sorted nearest -> farthest
+local function scanTexts()
+	local root = getRoot()
+
+	local characters = {}
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p.Character then table.insert(characters, p.Character) end
+	end
+
+	local list = {}
+	for _, obj in ipairs(workspace:GetDescendants()) do
+		if (obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox")) and obj.Visible then
+			local label = cleanText(obj.Text)
+			if label ~= "" then
+				local skip = false
+				for _, char in ipairs(characters) do
+					if obj:IsDescendantOf(char) then skip = true break end
+				end
+				if not skip then
+					local pos = getTextPosition(obj)
+					if pos then
+						local dist = root and (pos - root.Position).Magnitude or 0
+						table.insert(list, { obj = obj, pos = pos, dist = dist, label = label })
+					end
+				end
+			end
+		end
+	end
+
+	table.sort(list, function(a, b) return a.dist < b.dist end)
+	return list
+end
+
+-- GUI
+local gui = Instance.new("ScreenGui")
+gui.Name = "TextTeleporter"
+gui.ResetOnSpawn = false
+gui.Parent = parentGui
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 260, 0, 400)
+frame.Position = UDim2.new(0.5, -130, 0.25, 0)
+frame.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
+frame.BorderSizePixel = 0
+frame.Parent = gui
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 30)
+title.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+title.BorderSizePixel = 0
+title.Text = "Text Teleporter"
+title.TextColor3 = Color3.new(1, 1, 1)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 14
+title.Parent = frame
+Instance.new("UICorner", title).CornerRadius = UDim.new(0, 8)
+
+local function makeButton(text, size, pos, color, parent)
+	local b = Instance.new("TextButton")
+	b.Size = size
+	b.Position = pos
+	b.BackgroundColor3 = color
+	b.BorderSizePixel = 0
+	b.Text = text
+	b.TextColor3 = Color3.new(1, 1, 1)
+	b.Font = Enum.Font.GothamMedium
+	b.TextSize = 12
+	b.TextWrapped = true
+	b.Parent = parent or frame
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+	return b
+end
+
+local nearestBtn = makeButton("Nearest", UDim2.new(0.5, -15, 0, 28), UDim2.new(0, 10, 0, 38), Color3.fromRGB(60, 120, 220))
+local farthestBtn = makeButton("Farthest", UDim2.new(0.5, -15, 0, 28), UDim2.new(0.5, 5, 0, 38), Color3.fromRGB(200, 90, 70))
+local refreshBtn = makeButton("Refresh List", UDim2.new(0.5, -15, 0, 28), UDim2.new(0, 10, 0, 72), Color3.fromRGB(70, 70, 80))
+
+local searchBox = Instance.new("TextBox")
+searchBox.Size = UDim2.new(0.5, -15, 0, 28)
+searchBox.Position = UDim2.new(0.5, 5, 0, 72)
+searchBox.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
+searchBox.BorderSizePixel = 0
+searchBox.PlaceholderText = "Search..."
+searchBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 130)
+searchBox.Text = ""
+searchBox.TextColor3 = Color3.new(1, 1, 1)
+searchBox.Font = Enum.Font.Gotham
+searchBox.TextSize = 12
+searchBox.ClearTextOnFocus = false
+searchBox.Parent = frame
+Instance.new("UICorner", searchBox).CornerRadius = UDim.new(0, 6)
+
+local listFrame = Instance.new("ScrollingFrame")
+listFrame.Position = UDim2.new(0, 10, 0, 108)
+listFrame.Size = UDim2.new(1, -20, 1, -158)
+listFrame.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
+listFrame.BorderSizePixel = 0
+listFrame.ScrollBarThickness = 4
+listFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+listFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+listFrame.Parent = frame
+Instance.new("UICorner", listFrame).CornerRadius = UDim.new(0, 6)
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0, 4)
+layout.Parent = listFrame
+
+local pad = Instance.new("UIPadding")
+pad.PaddingTop = UDim.new(0, 4)
+pad.PaddingBottom = UDim.new(0, 4)
+pad.PaddingLeft = UDim.new(0, 4)
+pad.PaddingRight = UDim.new(0, 8)
+pad.Parent = listFrame
+
+local status = Instance.new("TextLabel")
+status.Size = UDim2.new(1, -20, 0, 40)
+status.Position = UDim2.new(0, 10, 1, -46)
+status.BackgroundTransparency = 1
+status.Text = "Ready"
+status.TextColor3 = Color3.fromRGB(180, 180, 190)
+status.Font = Enum.Font.Gotham
+status.TextSize = 12
+status.TextWrapped = true
+status.Parent = frame
+
+-- Logic
+local cached = {}
+
+local function applyFilter(list)
+	local q = searchBox.Text:lower()
+	if q == "" then return list end
+	local out = {}
+	for _, entry in ipairs(list) do
+		if entry.label:lower():find(q, 1, true) then
+			table.insert(out, entry)
+		end
+	end
+	return out
+end
+
+local function teleportToText(entry)
+	local root = getRoot()
+	if not root then
+		status.Text = "No character found."
+		return
+	end
+	if not entry.obj or not entry.obj:IsDescendantOf(workspace) then
+		status.Text = "That text no longer exists. Hit Refresh."
+		return
+	end
+	local pos = getTextPosition(entry.obj)
+	if not pos then
+		status.Text = "Couldn't get that text's position."
+		return
+	end
+
+	local dist = (pos - root.Position).Magnitude
+	root.CFrame = CFrame.new(pos + Vector3.new(0, HEIGHT_OFFSET, 0))
+	status.Text = string.format("Teleported to \"%s\" (%.0f studs)", entry.label, dist)
+end
+
+local function render()
+	for _, child in ipairs(listFrame:GetChildren()) do
+		if child:IsA("TextButton") then child:Destroy() end
+	end
+
+	local shown = applyFilter(cached)
+	for i, entry in ipairs(shown) do
+		if i > MAX_ENTRIES then break end
+		local btn = makeButton(
+			string.format("%s  (%.0f studs)", entry.label, entry.dist),
+			UDim2.new(1, 0, 0, 28),
+			UDim2.new(),
+			Color3.fromRGB(48, 48, 60),
+			listFrame
+		)
+		btn.LayoutOrder = i
+		btn.TextXAlignment = Enum.TextXAlignment.Left
+		btn.TextTruncate = Enum.TextTruncate.AtEnd
+		btn.TextWrapped = false
+		btn.MouseButton1Click:Connect(function()
+			teleportToText(entry)
+		end)
+	end
+
+	local note = #shown > MAX_ENTRIES and string.format(" (showing nearest %d)", MAX_ENTRIES) or ""
+	status.Text = string.format("Found %d text(s)%s.", #shown, note)
+end
+
+local function refresh()
+	cached = scanTexts()
+	render()
+end
+
+nearestBtn.MouseButton1Click:Connect(function()
+	for _, entry in ipairs(applyFilter(scanTexts())) do
+		if entry.dist >= MIN_DISTANCE then
+			teleportToText(entry)
+			return
+		end
+	end
+	status.Text = "No text found."
+end)
+
+farthestBtn.MouseButton1Click:Connect(function()
+	local list = applyFilter(scanTexts())
+	if #list == 0 then
+		status.Text = "No text found."
+		return
+	end
+	teleportToText(list[#list])
+end)
+
+refreshBtn.MouseButton1Click:Connect(refresh)
+searchBox:GetPropertyChangedSignal("Text"):Connect(render)
+
+-- Dragging
+local dragging, dragStart, startPos
+title.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragStart = input.Position
+		startPos = frame.Position
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		local delta = input.Position - dragStart
+		frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = false
+	end
+end)
+
+refresh()
